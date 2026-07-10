@@ -12,29 +12,43 @@ import './App.css';
 
 // Dynamic API detection helpers.
 const getInitialApiBase = () => {
-  if (typeof window !== 'undefined') {
-    const saved = localStorage.getItem('VEXO_API_BASE');
-    if (saved) return saved;
-    const hn = window.location.hostname;
-    // If local APK environment or localhost dev
-    if (hn === 'localhost' || hn === '127.0.0.1' || hn === '' || hn.includes('local') || hn.startsWith('10.')) {
-      return 'http://67.205.137.231:3001';
+  const fallback = 'http://67.205.137.231:3001';
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const saved = window.localStorage.getItem('VEXO_API_BASE');
+      if (saved) return saved;
     }
-    return `http://${hn}:3001`;
+  } catch (e) {
+    console.warn("localStorage is not available:", e);
   }
-  return 'http://67.205.137.231:3001';
+
+  try {
+    if (typeof window !== 'undefined' && window.location) {
+      const hn = window.location.hostname;
+      // If local APK environment or localhost dev
+      if (hn === 'localhost' || hn === '127.0.0.1' || hn === '' || hn.includes('local') || hn.startsWith('10.')) {
+        return fallback;
+      }
+      return `http://${hn}:3001`;
+    }
+  } catch (e) {
+    console.warn("window.location is not available:", e);
+  }
+
+  return fallback;
 };
 
 export default function App() {
   const [apiBase, setApiBase] = useState(getInitialApiBase);
-  const [tempApiUrl, setTempApiUrl] = useState(apiBase);
+  const [tempApiUrl, setTempApiUrl] = useState(getInitialApiBase);
   const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard', 'bookings', 'calls', 'editor'
 
-  const wsBase = apiBase.replace(/^http/, 'ws');
+  const wsBase = (apiBase || '').replace(/^http/, 'ws');
   
   // Re-expose API_BASE and WS_BASE locally so child components/hooks work seamlessly
-  const API_BASE = apiBase;
-  const WS_BASE = wsBase;
+  const API_BASE = apiBase || 'http://67.205.137.231:3001';
+  const WS_BASE = wsBase || 'ws://67.205.137.231:3001';
+
   
   // Real-Time States
   const [bookings, setBookings] = useState([]);
