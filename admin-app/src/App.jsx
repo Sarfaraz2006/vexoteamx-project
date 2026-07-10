@@ -129,51 +129,55 @@ export default function App() {
 
     // Setup real-time WebSocket connection
     const connectWebSocket = () => {
-      console.log("Connecting to WebSocket:", WS_BASE);
-      const ws = new WebSocket(WS_BASE);
-      wsRef.current = ws;
+      try {
+        console.log("Connecting to WebSocket:", WS_BASE);
+        const ws = new WebSocket(WS_BASE);
+        wsRef.current = ws;
 
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          console.log("WS message received:", message);
-          
-          if (message.type === 'NEW_BOOKING') {
-            setBookings(prev => [message.data, ...prev]);
-            setLatestAlert({ type: 'booking', data: message.data });
-            setNotifications(prev => [
-              { id: Date.now(), text: `New Booking: ${message.data.name} for ${message.data.service}`, time: new Date().toLocaleTimeString() },
-              ...prev
-            ]);
-            playNotificationBeep();
-          } else if (message.type === 'NEW_CALL') {
-            setCalls(prev => [message.data, ...prev]);
-            setLatestAlert({ type: 'call', data: message.data });
-            setNotifications(prev => [
-              { id: Date.now(), text: `Callback Request: ${message.data.name} (${message.data.phone})`, time: new Date().toLocaleTimeString() },
-              ...prev
-            ]);
-            playNotificationBeep();
-          } else if (message.type === 'CONFIG_UPDATED') {
-            setConfig(message.data);
-          } else if (message.type === 'BOOKING_UPDATED') {
-            setBookings(prev => prev.map(b => b.id === message.data.id ? message.data : b));
-          } else if (message.type === 'CALL_UPDATED') {
-            setCalls(prev => prev.map(c => c.id === message.data.id ? message.data : c));
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            console.log("WS message received:", message);
+            
+            if (message.type === 'NEW_BOOKING') {
+              setBookings(prev => [message.data, ...prev]);
+              setLatestAlert({ type: 'booking', data: message.data });
+              setNotifications(prev => [
+                { id: Date.now(), text: `New Booking: ${message.data.name} for ${message.data.service}`, time: new Date().toLocaleTimeString() },
+                ...prev
+              ]);
+              playNotificationBeep();
+            } else if (message.type === 'NEW_CALL') {
+              setCalls(prev => [message.data, ...prev]);
+              setLatestAlert({ type: 'call', data: message.data });
+              setNotifications(prev => [
+                { id: Date.now(), text: `Callback Request: ${message.data.name} (${message.data.phone})`, time: new Date().toLocaleTimeString() },
+                ...prev
+              ]);
+              playNotificationBeep();
+            } else if (message.type === 'CONFIG_UPDATED') {
+              setConfig(message.data);
+            } else if (message.type === 'BOOKING_UPDATED') {
+              setBookings(prev => prev.map(b => b.id === message.data.id ? message.data : b));
+            } else if (message.type === 'CALL_UPDATED') {
+              setCalls(prev => prev.map(c => c.id === message.data.id ? message.data : c));
+            }
+          } catch (e) {
+            console.error("Failed to parse WebSocket message", e);
           }
-        } catch (e) {
-          console.error("Failed to parse WebSocket message", e);
-        }
-      };
+        };
 
-      ws.onclose = () => {
-        console.log("WebSocket disconnected. Retrying connection in 5 seconds...");
-        setTimeout(connectWebSocket, 5000);
-      };
+        ws.onclose = () => {
+          console.log("WebSocket disconnected. Retrying connection in 5 seconds...");
+          setTimeout(connectWebSocket, 5000);
+        };
 
-      ws.onerror = (err) => {
-        console.error("WebSocket encountered an error:", err);
-      };
+        ws.onerror = (err) => {
+          console.error("WebSocket encountered an error:", err);
+        };
+      } catch (e) {
+        console.error("Critical: WebSocket initialization failed:", e);
+      }
     };
 
     connectWebSocket();
