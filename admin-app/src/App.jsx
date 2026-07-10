@@ -1,1035 +1,1356 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { 
-  ArrowRight, Phone, Cpu, Zap, Code, Database, 
-  UserCheck, Award, Smile, Rocket, Bot, Video, 
-  Layers, Settings, Check, Star, Mail, MapPin, 
-  X, Trash, Plus, Edit2, Save, RefreshCw, Bell, 
-  Calendar, CheckCircle2, AlertTriangle, PhoneCall,
-  Volume2, VolumeX, Edit
-} from 'lucide-react';
+import { CapacitorFlash } from '@capgo/capacitor-flash';
+import { AppLauncher } from '@capacitor/app-launcher';
+import { Settings as SettingsIcon, Volume2, VolumeX, Radio, Zap, Shield, Heart } from 'lucide-react';
 import './App.css';
 
-// Dynamic API detection helpers.
-const getInitialApiBase = () => {
-  const fallback = 'http://67.205.137.231:3001';
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const saved = window.localStorage.getItem('VEXO_API_BASE');
-      if (saved) return saved;
-    }
-  } catch (e) {
-    console.warn("localStorage is not available:", e);
-  }
-
-  try {
-    if (typeof window !== 'undefined' && window.location) {
-      const hn = window.location.hostname;
-      // If local APK environment or localhost dev
-      if (hn === 'localhost' || hn === '127.0.0.1' || hn === '' || hn.includes('local') || hn.startsWith('10.')) {
-        return fallback;
-      }
-      return `http://${hn}:3001`;
-    }
-  } catch (e) {
-    console.warn("window.location is not available:", e);
-  }
-
-  return fallback;
-};
+// Audio Context helper
+let audioContextInstance = null;
+let humOsc = null;
+let humGain = null;
 
 export default function App() {
-  const [apiBase, setApiBase] = useState(getInitialApiBase);
-  const [tempApiUrl, setTempApiUrl] = useState(getInitialApiBase);
-  const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard', 'bookings', 'calls', 'editor'
-
-  const wsBase = (apiBase || '').replace(/^http/, 'ws');
+  // Main state flags
+  const [booted, setBooted] = useState(false);
+  const [bootProgress, setBootProgress] = useState(0);
+  const [bootStatusText, setBootStatusText] = useState("Calibrating Stark OS Interface...");
   
-  // Re-expose API_BASE and WS_BASE locally so child components/hooks work seamlessly
-  const API_BASE = apiBase || 'http://67.205.137.231:3001';
-  const WS_BASE = wsBase || 'ws://67.205.137.231:3001';
-
+  const [theme, setTheme] = useState('jarvis'); // jarvis, friday, safety, redalert
+  const [sfxEnabled, setSfxEnabled] = useState(true);
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [isListening, setIsListening] = useState(false);
+  const [systemPower, setSystemPower] = useState(100);
   
-  // Real-Time States
-  const [bookings, setBookings] = useState([]);
-  const [calls, setCalls] = useState([]);
-  const [config, setConfig] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  
-  // Notification States
-  const [notifications, setNotifications] = useState([]);
-  const [soundEnabled, setSoundEnabled] = useState(true);
-  const [latestAlert, setLatestAlert] = useState(null);
+  // Power sliders
+  const [sliders, setSliders] = useState({
+    thrusters: 90,
+    repulsors: 75,
+    shields: 80,
+    lifesupport: 95
+  });
 
-  // visual modals for adding/editing services/projects/testimonials
-  const [editorModal, setEditorModal] = useState(null); // 'service_add', 'service_edit', 'project_add', 'project_edit', 'testimonial_add', 'testimonial_edit'
-  const [modalItem, setModalItem] = useState(null); // stores item being edited
+  // Diagnostics panel status
+  const [diagPart, setDiagPart] = useState({
+    title: "SYSTEM STATUS",
+    details: [
+      { name: "Optic HUD Sensors", val: "ONLINE [100%]", status: "ok" },
+      { name: "Main Arc Interface", val: "STABLE [100%]", status: "ok" },
+      { name: "Weapon Controls", val: "STANDBY [100%]", status: "ok" },
+      { name: "Thruster Arrays", val: "OPERATIONAL [94%]", status: "ok" }
+    ]
+  });
 
-  // WebSocket Ref
-  const wsRef = useRef(null);
-
-  // Play Audible Notification Beep using Web Audio API (cross-platform, native, zero file loading required)
-  const playNotificationBeep = () => {
-    if (!soundEnabled) return;
-    try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      
-      const playBeep = (freq, duration, startTime) => {
-        const osc = audioCtx.createOscillator();
-        const gain = audioCtx.createGain();
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        
-        osc.frequency.setValueAtTime(freq, startTime);
-        gain.gain.setValueAtTime(0.15, startTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration - 0.05);
-        
-        osc.start(startTime);
-        osc.stop(startTime + duration);
-      };
-
-      const now = audioCtx.currentTime;
-      playBeep(880, 0.15, now);
-      playBeep(1100, 0.25, now + 0.18);
-    } catch (e) {
-      console.log("Audio contexts blocked or not supported on this device.", e);
+  // Chat message console
+  const [chatLogs, setChatLogs] = useState([
+    {
+      sender: "J.A.R.V.I.S.",
+      text: "Uplink established. All systems nominal, sir. I have generated a diagnostics map and initialized Stark UI. How can I help you today?",
+      isUser: false
     }
-  };
+  ]);
 
-  // Fetch Data from SQLite API
-  const fetchData = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const configRes = await fetch(`${API_BASE}/api/config`);
-      const bookingsRes = await fetch(`${API_BASE}/api/bookings`);
-      const callsRes = await fetch(`${API_BASE}/api/calls`);
-      
-      if (!configRes.ok || !bookingsRes.ok || !callsRes.ok) {
-        throw new Error("Failed to synchronize with database servers.");
-      }
+  // Telemetry log feeds
+  const [telemetryLogs, setTelemetryLogs] = useState([
+    { text: "Secure connection initiated on terminal.", type: "info", time: new Date().toLocaleTimeString() },
+    { text: "Background Stark HUD loaded successfully.", type: "info", time: new Date().toLocaleTimeString() },
+    { text: "Main Arc core temperature normal.", type: "info", time: new Date().toLocaleTimeString() }
+  ]);
 
-      const configData = await configRes.json();
-      const bookingsData = await bookingsRes.json();
-      const callsData = await callsRes.json();
+  // API Key & Settings
+  const [showSettings, setShowSettings] = useState(false);
+  const [apiKey, setApiKey] = useState(() => {
+    return localStorage.getItem('STARK_GEMINI_KEY') || '';
+  });
+  const [tempKey, setTempKey] = useState('');
 
-      setConfig(configData);
-      setBookings(bookingsData);
-      setCalls(callsData);
-    } catch (err) {
-      setError(err.message || "Database connection offline.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  // DOM and Web API Refs
+  const chatEndRef = useRef(null);
+  const telemetryEndRef = useRef(null);
+  const canvasRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const currentThemeRef = useRef(theme);
+  const systemPowerRef = useRef(systemPower);
+
+  // Sync refs to avoid stale closures in listeners
+  useEffect(() => {
+    currentThemeRef.current = theme;
+  }, [theme]);
 
   useEffect(() => {
-    fetchData();
+    systemPowerRef.current = systemPower;
+  }, [systemPower]);
 
-    // Setup real-time WebSocket connection
-    const connectWebSocket = () => {
-      try {
-        console.log("Connecting to WebSocket:", WS_BASE);
-        const ws = new WebSocket(WS_BASE);
-        wsRef.current = ws;
+  // System telemetry helper
+  const addTelemetryLog = (text, type = "info") => {
+    const time = new Date().toLocaleTimeString();
+    setTelemetryLogs(prev => [...prev, { text, type, time }]);
+  };
 
-        ws.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data);
-            console.log("WS message received:", message);
-            
-            if (message.type === 'NEW_BOOKING') {
-              setBookings(prev => [message.data, ...prev]);
-              setLatestAlert({ type: 'booking', data: message.data });
-              setNotifications(prev => [
-                { id: Date.now(), text: `New Booking: ${message.data.name} for ${message.data.service}`, time: new Date().toLocaleTimeString() },
-                ...prev
-              ]);
-              playNotificationBeep();
-            } else if (message.type === 'NEW_CALL') {
-              setCalls(prev => [message.data, ...prev]);
-              setLatestAlert({ type: 'call', data: message.data });
-              setNotifications(prev => [
-                { id: Date.now(), text: `Callback Request: ${message.data.name} (${message.data.phone})`, time: new Date().toLocaleTimeString() },
-                ...prev
-              ]);
-              playNotificationBeep();
-            } else if (message.type === 'CONFIG_UPDATED') {
-              setConfig(message.data);
-            } else if (message.type === 'BOOKING_UPDATED') {
-              setBookings(prev => prev.map(b => b.id === message.data.id ? message.data : b));
-            } else if (message.type === 'CALL_UPDATED') {
-              setCalls(prev => prev.map(c => c.id === message.data.id ? message.data : c));
-            }
-          } catch (e) {
-            console.error("Failed to parse WebSocket message", e);
-          }
-        };
+  // Text to Speech
+  const speak = (text) => {
+    if (!voiceEnabled) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices();
+      
+      let preferredVoice;
+      if (currentThemeRef.current === 'friday') {
+        // FRIDAY: US Female / high frequency
+        preferredVoice = voices.find(v => v.lang.includes('en-US') && (v.name.toLowerCase().includes('female') || v.name.toLowerCase().includes('zira')));
+      } else {
+        // JARVIS: British Male / Daniel
+        preferredVoice = voices.find(v => v.lang.includes('en-GB') || v.name.toLowerCase().includes('daniel') || v.name.toLowerCase().includes('google uk'));
+      }
 
-        ws.onclose = () => {
-          console.log("WebSocket disconnected. Retrying connection in 5 seconds...");
-          setTimeout(connectWebSocket, 5000);
-        };
+      if (preferredVoice) utterance.voice = preferredVoice;
+      utterance.rate = currentThemeRef.current === 'friday' ? 1.1 : 1.02;
+      utterance.pitch = currentThemeRef.current === 'friday' ? 1.05 : 0.92;
+      window.speechSynthesis.speak(utterance);
+    } catch (e) {
+      console.error("Text to speech failed", e);
+    }
+  };
 
-        ws.onerror = (err) => {
-          console.error("WebSocket encountered an error:", err);
-        };
-      } catch (e) {
-        console.error("Critical: WebSocket initialization failed:", e);
+  // Initialize Web Audio Synth Hum
+  const initAudio = () => {
+    if (audioContextInstance) return;
+    try {
+      audioContextInstance = new (window.AudioContext || window.webkitAudioContext)();
+      humOsc = audioContextInstance.createOscillator();
+      humGain = audioContextInstance.createGain();
+      
+      humOsc.type = 'triangle';
+      humOsc.frequency.setValueAtTime(55, audioContextInstance.currentTime);
+      humGain.gain.setValueAtTime(0.012, audioContextInstance.currentTime);
+      
+      humOsc.connect(humGain);
+      humGain.connect(audioContextInstance.destination);
+      humOsc.start();
+      addTelemetryLog("Core Synthesizer hum initialized at 55Hz.", "info");
+    } catch (e) {
+      console.error("Failed to initialize Audio Context", e);
+    }
+  };
+
+  // Play Beep sound
+  const playBeep = (freq = 800, type = 'sine', duration = 0.08, vol = 0.04) => {
+    if (!sfxEnabled || !audioContextInstance) return;
+    try {
+      const osc = audioContextInstance.createOscillator();
+      const gain = audioContextInstance.createGain();
+      
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, audioContextInstance.currentTime);
+      gain.gain.setValueAtTime(vol, audioContextInstance.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioContextInstance.currentTime + duration);
+      
+      osc.connect(gain);
+      gain.connect(audioContextInstance.destination);
+      
+      osc.start();
+      osc.stop(audioContextInstance.currentTime + duration);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Play sweeps (e.g. repulsors, overload)
+  const playSweep = (startFreq = 200, endFreq = 800, duration = 0.5, type = 'sine', vol = 0.05) => {
+    if (!sfxEnabled || !audioContextInstance) return;
+    try {
+      const osc = audioContextInstance.createOscillator();
+      const gain = audioContextInstance.createGain();
+      
+      osc.type = type;
+      osc.frequency.setValueAtTime(startFreq, audioContextInstance.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(endFreq, audioContextInstance.currentTime + duration);
+      
+      gain.gain.setValueAtTime(vol, audioContextInstance.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioContextInstance.currentTime + duration);
+      
+      osc.connect(gain);
+      gain.connect(audioContextInstance.destination);
+      
+      osc.start();
+      osc.stop(audioContextInstance.currentTime + duration);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // Red Alert alarm sound loop
+  const triggerAlarmSound = () => {
+    if (!sfxEnabled || !audioContextInstance) return;
+    let count = 0;
+    const interval = setInterval(() => {
+      if (currentThemeRef.current !== 'redalert' || count > 4) {
+        clearInterval(interval);
+        return;
+      }
+      playBeep(880, 'sawtooth', 0.2, 0.02);
+      setTimeout(() => playBeep(660, 'sawtooth', 0.2, 0.02), 150);
+      count++;
+    }, 600);
+  };
+
+  // Manage Background hum volume
+  useEffect(() => {
+    if (humGain && audioContextInstance) {
+      if (sfxEnabled) {
+        humGain.gain.setValueAtTime(0.012, audioContextInstance.currentTime);
+      } else {
+        humGain.gain.setValueAtTime(0, audioContextInstance.currentTime);
+      }
+    }
+  }, [sfxEnabled]);
+
+  // Manage Hum frequency by power state
+  useEffect(() => {
+    if (humOsc && audioContextInstance) {
+      let freq = 55;
+      if (systemPower === 200) freq = 110;
+      else if (systemPower === 25) freq = 30;
+      humOsc.frequency.setValueAtTime(freq, audioContextInstance.currentTime);
+    }
+  }, [systemPower]);
+
+  // Adjust theme variables
+  useEffect(() => {
+    const root = document.documentElement;
+    root.className = ''; // Reset
+    if (theme === 'redalert') {
+      root.classList.add('red-alert-active');
+    } else if (theme === 'friday') {
+      root.classList.add('orange-theme-active');
+    } else if (theme === 'safety') {
+      root.classList.add('green-theme-active');
+    }
+  }, [theme]);
+
+  // Auto-scroll chat & logs
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatLogs]);
+
+  useEffect(() => {
+    telemetryEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [telemetryLogs]);
+
+  // Booting Sequence simulation
+  useEffect(() => {
+    if (booted) return;
+    const interval = setInterval(() => {
+      setBootProgress(prev => {
+        const next = prev + Math.floor(Math.random() * 8) + 2;
+        if (next >= 100) {
+          clearInterval(interval);
+          setBootStatusText("Uplink Secure. Ready for operator initialization.");
+          return 100;
+        }
+        
+        // Progress text feedback
+        if (next > 20 && next < 45) {
+          setBootStatusText("Calibrating Neural Interface...");
+        } else if (next >= 45 && next < 75) {
+          setBootStatusText("Loading Arc Reactor Telemetry...");
+        } else if (next >= 75 && next < 95) {
+          setBootStatusText("Synchronizing J.A.R.V.I.S. Core Matrix...");
+        }
+        return next;
+      });
+    }, 70);
+
+    return () => clearInterval(interval);
+  }, [booted]);
+
+  const handleBootComplete = () => {
+    initAudio();
+    playSweep(150, 1000, 1.2, 'sawtooth', 0.05);
+    setBooted(true);
+    speak("Welcome back, sir. I have initialized the Stark HUD interface. Standing by.");
+  };
+
+  // Hologram Canvas rotation drawing
+  useEffect(() => {
+    if (!booted || !canvasRef.current) return;
+    
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext('2d');
+    let animationId = null;
+    let rotationAngle = 0;
+    let hologramMode = 'wireframe-suit'; // wireframe-suit, radar-pulse, cube
+
+    const handleCanvasClick = () => {
+      playBeep(1100, 'sine', 0.05, 0.03);
+      if (hologramMode === 'wireframe-suit') {
+        hologramMode = 'radar-pulse';
+        document.getElementById('hologram-mode-txt').textContent = "RADAR SCAN TELEMETRY";
+      } else if (hologramMode === 'radar-pulse') {
+        hologramMode = 'cube';
+        document.getElementById('hologram-mode-txt').textContent = "TESSERACT CUBE PROJ";
+      } else {
+        hologramMode = 'wireframe-suit';
+        document.getElementById('hologram-mode-txt').textContent = "3D WIREFRAME HELMET";
       }
     };
+    canvas.addEventListener('click', handleCanvasClick);
 
-    connectWebSocket();
+    const fitCanvas = () => {
+      if (canvas.parentElement) {
+        canvas.width = canvas.parentElement.clientWidth;
+        canvas.height = canvas.parentElement.clientHeight - 40;
+      }
+    };
+    window.addEventListener('resize', fitCanvas);
+    fitCanvas();
+
+    const draw = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      
+      // Determine stroke color by active theme
+      const t = currentThemeRef.current;
+      ctx.strokeStyle = t === 'redalert' ? 'rgba(255, 0, 80, 0.45)' : 
+                        t === 'friday' ? 'rgba(255, 120, 0, 0.45)' : 
+                        t === 'safety' ? 'rgba(0, 255, 120, 0.45)' : 'rgba(0, 243, 255, 0.45)';
+      ctx.lineWidth = 1;
+      
+      const cx = canvas.width / 2;
+      const cy = canvas.height / 2;
+      rotationAngle += 0.01;
+
+      if (hologramMode === 'wireframe-suit') {
+        // Draw rotating 3D iron man helmet representation
+        ctx.beginPath();
+        for (let i = 0; i < 360; i += 15) {
+          const rad = (i * Math.PI) / 180 + rotationAngle;
+          const r = 50 + Math.sin(rad * 4) * 8;
+          const x = cx + Math.cos(rad) * r;
+          const y = cy + Math.sin(rad * 2.2) * 50 - 10;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.closePath();
+        ctx.stroke();
+
+        // Eye slits glow
+        ctx.fillStyle = t === 'redalert' ? 'rgba(255, 0, 80, 0.2)' : 
+                        t === 'friday' ? 'rgba(255, 120, 0, 0.2)' : 
+                        t === 'safety' ? 'rgba(0, 255, 120, 0.2)' : 'rgba(0, 243, 255, 0.2)';
+        ctx.beginPath();
+        ctx.ellipse(cx - 15, cy - 10, 8, 3, rotationAngle * 0.5, 0, Math.PI * 2);
+        ctx.ellipse(cx + 15, cy - 10, 8, 3, -rotationAngle * 0.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Crosshairs alignment
+        ctx.beginPath();
+        ctx.moveTo(cx - 70, cy); ctx.lineTo(cx - 50, cy);
+        ctx.moveTo(cx + 50, cy); ctx.lineTo(cx + 70, cy);
+        ctx.moveTo(cx, cy - 70); ctx.lineTo(cx, cy - 50);
+        ctx.moveTo(cx, cy + 50); ctx.lineTo(cx, cy + 70);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(cx, cy, 65, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (hologramMode === 'radar-pulse') {
+        // Sweep radar circles
+        ctx.beginPath();
+        ctx.arc(cx, cy, 70, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        ctx.beginPath();
+        ctx.arc(cx, cy, 40, 0, Math.PI * 2);
+        ctx.stroke();
+        
+        // Swiping hand
+        const sx = cx + Math.cos(rotationAngle * 1.5) * 70;
+        const sy = cy + Math.sin(rotationAngle * 1.5) * 70;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(sx, sy);
+        ctx.stroke();
+      } else if (hologramMode === 'cube') {
+        // Rotating 3D wireframe cube
+        const size = 35;
+        const points = [
+          {x: -1, y: -1, z: -1}, {x: 1, y: -1, z: -1}, {x: 1, y: 1, z: -1}, {x: -1, y: 1, z: -1},
+          {x: -1, y: -1, z: 1},  {x: 1, y: -1, z: 1},  {x: 1, y: 1, z: 1},  {x: -1, y: 1, z: 1}
+        ];
+        
+        const proj = points.map(p => {
+          let y1 = p.y * Math.cos(rotationAngle) - p.z * Math.sin(rotationAngle);
+          let z1 = p.y * Math.sin(rotationAngle) + p.z * Math.cos(rotationAngle);
+          let x2 = p.x * Math.cos(rotationAngle) + z1 * Math.sin(rotationAngle);
+          let z2 = -p.x * Math.sin(rotationAngle) + z1 * Math.cos(rotationAngle);
+          
+          const scale = 150 / (150 + z2 * size);
+          return {
+            x: cx + x2 * size * scale,
+            y: cy + y1 * size * scale
+          };
+        });
+        
+        const drawLine = (i, j) => {
+          ctx.beginPath();
+          ctx.moveTo(proj[i].x, proj[i].y);
+          ctx.lineTo(proj[j].x, proj[j].y);
+          ctx.stroke();
+        };
+        
+        for (let i = 0; i < 4; i++) {
+          drawLine(i, (i + 1) % 4);
+          drawLine(i + 4, ((i + 1) % 4) + 4);
+          drawLine(i, i + 4);
+        }
+      }
+
+      animationId = requestAnimationFrame(draw);
+    };
+    draw();
 
     return () => {
-      if (wsRef.current) wsRef.current.close();
+      cancelAnimationFrame(animationId);
+      canvas.removeEventListener('click', handleCanvasClick);
+      window.removeEventListener('resize', fitCanvas);
     };
-  }, [apiBase]);
+  }, [booted]);
 
-  // Update Booking Status API call
-  const handleUpdateBookingStatus = async (id, status) => {
-    try {
-      const res = await fetch(`${API_BASE}/api/bookings/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-      });
-      if (res.ok) {
-        const updated = await res.json();
-        setBookings(prev => prev.map(b => b.id === id ? updated : b));
+  // Speech Recognition API setup
+  useEffect(() => {
+    if (!booted) return;
+    
+    window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (window.SpeechRecognition) {
+      const rec = new window.SpeechRecognition();
+      rec.continuous = false;
+      rec.lang = 'en-US';
+      rec.interimResults = false;
+
+      rec.onresult = (event) => {
+        const text = event.results[0][0].transcript;
+        addTelemetryLog(`Voice decoded: "${text}"`, "info");
+        handleUserTextSubmit(text);
+      };
+
+      rec.onerror = (err) => {
+        console.error("Speech Recognition error:", err);
+        setIsListening(false);
+      };
+
+      rec.onend = () => {
+        setIsListening(false);
+      };
+
+      recognitionRef.current = rec;
+    } else {
+      addTelemetryLog("Speech Recognition API not supported in this browser environment.", "warn");
+    }
+  }, [booted]);
+
+  const toggleMicListening = () => {
+    playBeep(600);
+    if (!recognitionRef.current) {
+      addTelemetryLog("No microphone service active.", "warn");
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current.stop();
+      setIsListening(false);
+    } else {
+      try {
+        recognitionRef.current.start();
+        setIsListening(true);
+        addTelemetryLog("Voice listener activated.", "info");
+      } catch (e) {
+        console.error(e);
       }
-    } catch (err) {
-      alert("Failed to update status: " + err.message);
     }
   };
 
-  // Delete Booking API call
-  const handleDeleteBooking = async (id) => {
-    if (!confirm("Are you sure you want to delete this booking record?")) return;
+  // Capacitor-based device actions
+  const actionFlashlight = async (turnOn) => {
     try {
-      const res = await fetch(`${API_BASE}/api/bookings/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setBookings(prev => prev.filter(b => b.id !== id));
+      if (turnOn) {
+        const isAvail = await CapacitorFlash.isAvailable();
+        if (isAvail?.value) {
+          await CapacitorFlash.switchOn({ intensity: 1.0 });
+          addTelemetryLog("Capacitor Native Flashlight set to ON.", "info");
+          return "System flashlight initialized, sir.";
+        }
+      } else {
+        await CapacitorFlash.switchOff();
+        addTelemetryLog("Capacitor Native Flashlight set to OFF.", "info");
+        return "Flashlight deactivated, sir.";
       }
-    } catch (err) {
-      alert("Failed to delete booking: " + err.message);
+    } catch (e) {
+      console.warn("Flashlight API fallback", e);
     }
+    // Fallback simulation text
+    addTelemetryLog(`Simulating Flashlight toggle: ${turnOn ? 'ON' : 'OFF'}`, "warn");
+    return `Flashlight ${turnOn ? 'activated' : 'deactivated'} (Simulation Mode).`;
   };
 
-  // Update Call Callback Status
-  const handleUpdateCallStatus = async (id, status) => {
+  const actionLaunchApp = async (appName) => {
+    const urls = {
+      youtube: 'https://youtube.com',
+      spotify: 'https://open.spotify.com',
+      maps: 'https://maps.google.com',
+      chrome: 'https://google.com',
+      whatsapp: 'https://web.whatsapp.com'
+    };
+    
+    const targetUrl = urls[appName.toLowerCase()] || `https://www.google.com/search?q=${encodeURIComponent(appName)}`;
     try {
-      const res = await fetch(`${API_BASE}/api/calls/${id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-      });
-      if (res.ok) {
-        const updated = await res.json();
-        setCalls(prev => prev.map(c => c.id === id ? updated : c));
-      }
-    } catch (err) {
-      alert("Failed to update status: " + err.message);
+      await AppLauncher.openUrl({ url: targetUrl });
+      addTelemetryLog(`Launching native app redirection for: ${appName}`, "info");
+      return `Initializing uplink redirect to ${appName}, sir.`;
+    } catch (e) {
+      console.warn("Capacitor AppLauncher failed, falling back to browser window", e);
     }
+    window.open(targetUrl, '_blank');
+    addTelemetryLog(`Simulating App Launch: ${appName} (Opened in new browser tab)`, "warn");
+    return `Opening ${appName} in browser tab, sir.`;
   };
 
-  // Delete Call Request
-  const handleDeleteCall = async (id) => {
-    if (!confirm("Are you sure you want to delete this call callback request?")) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/calls/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setCalls(prev => prev.filter(c => c.id !== id));
-      }
-    } catch (err) {
-      alert("Failed to delete request: " + err.message);
+  // Central Action Matcher & Executor (triggered by Gemini function calls or Local parsing)
+  const executeSystemAction = async (actionName, params = {}) => {
+    playBeep(700, 'sine', 0.1, 0.05);
+    let logMsg = "";
+    let responseText = "";
+
+    switch (actionName) {
+      case 'turn_on_flashlight':
+        responseText = await actionFlashlight(true);
+        break;
+      case 'turn_off_flashlight':
+        responseText = await actionFlashlight(false);
+        break;
+      case 'open_app':
+        responseText = await actionLaunchApp(params.appName || 'Google');
+        break;
+      case 'change_theme':
+        const nextTheme = params.theme?.toLowerCase();
+        if (['jarvis', 'friday', 'safety', 'redalert'].includes(nextTheme)) {
+          setTheme(nextTheme);
+          logMsg = `Main shell interface switched to: ${nextTheme.toUpperCase()}`;
+          responseText = nextTheme === 'friday' ? 
+            "Switching user-interface shell to Friday load backup matrix. Hello sir!" : 
+            nextTheme === 'redalert' ? "Activating red alert protocol. Weapon arrays are charged." :
+            nextTheme === 'safety' ? "Switching interface to safety diagnostics console." :
+            "Reloading standard Jarvis mainframe interface, sir.";
+          
+          if (nextTheme === 'redalert') {
+            setSystemPower(200);
+            triggerAlarmSound();
+          } else if (nextTheme === 'safety') {
+            setSystemPower(25);
+          } else {
+            setSystemPower(100);
+          }
+        }
+        break;
+      case 'adjust_power_level':
+        const nextPower = Number(params.level);
+        if (!isNaN(nextPower)) {
+          setSystemPower(nextPower);
+          logMsg = `Arc Core capacity configured to ${nextPower}%.`;
+          responseText = `Arc Core capacity configured to ${nextPower} percent, sir.`;
+          if (nextPower >= 200) {
+            setTheme('redalert');
+            triggerAlarmSound();
+          } else if (nextPower <= 25) {
+            setTheme('safety');
+          } else {
+            setTheme('jarvis');
+          }
+        }
+        break;
+      case 'trigger_protocol':
+        const protocol = params.protocol?.toLowerCase();
+        if (protocol === 'diagnostics scan') {
+          responseText = "Initializing diagnostic sweep. Analyzing micro-capacitors and optical arrays. One moment, sir.";
+          addTelemetryLog("Diagnostic sweep initiated.", "info");
+          
+          // Animate schematic components sequentially
+          let index = 0;
+          const parts = ["part-helmet", "part-neck", "part-chest", "part-left-arm", "part-right-arm", "part-left-leg", "part-right-leg"];
+          const diagInterval = setInterval(() => {
+            if (index >= parts.length) {
+              clearInterval(diagInterval);
+              setChatLogs(prev => [...prev, {
+                sender: currentThemeRef.current === 'friday' ? 'F.R.I.D.A.Y.' : 'J.A.R.V.I.S.',
+                text: "System diagnostics completed. All subsystems are functioning within design limits. Weapon systems armed on standby. Arc Core: Stable.",
+                isUser: false
+              }]);
+              speak("System diagnostics completed. All subsystems are functioning within design limits.");
+              return;
+            }
+            const el = document.getElementById(parts[index]);
+            if (el) {
+              el.style.fill = 'rgba(0, 243, 255, 0.4)';
+              playBeep(400 + index * 100, 'sine', 0.05, 0.05);
+              addTelemetryLog(`Node scanned: ${parts[index].replace('part-', '').toUpperCase()} - PASS`, "info");
+              setTimeout(() => { el.style.fill = 'none'; }, 400);
+            }
+            index++;
+          }, 300);
+        } else if (protocol === 'repulsor test') {
+          responseText = "Charging repulsor nodes. Testing magnetic confinement rings. Standby for plasma discharge simulation.";
+          addTelemetryLog("Repulsors firing system test requested.", "warn");
+          
+          setTimeout(() => {
+            const lArm = document.getElementById('part-left-arm');
+            const rArm = document.getElementById('part-right-arm');
+            if (lArm) lArm.style.fill = 'rgba(255, 255, 255, 0.8)';
+            if (rArm) rArm.style.fill = 'rgba(255, 255, 255, 0.8)';
+            playSweep(200, 1500, 0.8, 'sine', 0.06);
+            addTelemetryLog("Plasma capacitor output calibrated: 100%.", "info");
+          }, 1200);
+
+          setTimeout(() => {
+            const lArm = document.getElementById('part-left-arm');
+            const rArm = document.getElementById('part-right-arm');
+            if (lArm) lArm.style.fill = 'none';
+            if (rArm) rArm.style.fill = 'none';
+            setChatLogs(prev => [...prev, {
+              sender: currentThemeRef.current === 'friday' ? 'F.R.I.D.A.Y.' : 'J.A.R.V.I.S.',
+              text: "Repulsor diagnostics show fully operational state, sir. Repulsor beam focusing lenses are clean.",
+              isUser: false
+            }]);
+            speak("Repulsor diagnostics show fully operational state, sir.");
+          }, 2200);
+        } else if (protocol === 'house party') {
+          responseText = "House Party Protocol initialized. Deploying local auxiliary armor suits Mark 42, 47, and 78, sir.";
+          addTelemetryLog("HOUSE PARTY PROTOCOL ENGAGED. Deploying 12 suits...", "warn");
+          let counter = 1;
+          const houseInterval = setInterval(() => {
+            if (counter > 4) {
+              clearInterval(houseInterval);
+              addTelemetryLog("Auxiliary flight arrays deployed and orbiting Stark Tower.", "info");
+              return;
+            }
+            addTelemetryLog(`Suit Mk-${30 + counter} deployed and airborne.`, "info");
+            playSweep(250 * counter, 550 * counter, 0.4, 'triangle', 0.04);
+            counter++;
+          }, 500);
+        } else if (protocol === 'clean slate') {
+          responseText = "Clean Slate Protocol activated. Initializing thermite self-destruction on all local auxiliary suits in 3 seconds.";
+          addTelemetryLog("CLEAN SLATE PROTOCOL DEPLOYED - SELF-DESTRUCTING SECURE CORES", "crit");
+          playSweep(800, 50, 2.0, 'sawtooth', 0.08);
+          
+          setTimeout(() => {
+            setSystemPower(0);
+            setTheme('safety');
+            const parts = document.querySelectorAll('.suit-part');
+            parts.forEach(p => p.style.stroke = 'var(--red-bright)');
+            addTelemetryLog("All combat suits destroyed. Arc core deactivated.", "crit");
+            setChatLogs(prev => [...prev, {
+              sender: currentThemeRef.current === 'friday' ? 'F.R.I.D.A.Y.' : 'J.A.R.V.I.S.',
+              text: "All local suits destroyed. Security quarantine active.",
+              isUser: false
+            }]);
+            speak("All auxiliary suits have been destroyed.");
+          }, 3000);
+        }
+        break;
+      default:
+        break;
     }
+
+    if (logMsg) addTelemetryLog(logMsg, "info");
+    return responseText;
   };
 
-  // Save full configuration to SQLite Backend
-  const handleSaveConfig = async (updatedConfig = config) => {
+  // Local rule-based offline NLP matching (when Gemini Key is not configured)
+  const processLocalTextCommand = async (text) => {
+    const cmd = text.toLowerCase();
+    
+    // Quick match triggers
+    if (cmd.includes('help') || cmd.includes('protocol')) {
+      const resText = "Protocols: 'diagnostics scan', 'repulsor test', 'red alert', 'house party', 'clean slate', 'power level [25/100/200]', 'change system to friday'.";
+      speak(resText);
+      return resText;
+    } 
+    else if (cmd.includes('diagnostics') || cmd.includes('scan') || cmd.includes('status')) {
+      return await executeSystemAction('trigger_protocol', { protocol: 'diagnostics scan' });
+    }
+    else if (cmd.includes('repulsor test') || cmd.includes('repulsors')) {
+      return await executeSystemAction('trigger_protocol', { protocol: 'repulsor test' });
+    }
+    else if (cmd.includes('red alert') || cmd.includes('combat') || cmd.includes('danger')) {
+      await executeSystemAction('change_theme', { theme: 'redalert' });
+      return "Red alert command console engaged. Shields set to maximum capacity.";
+    }
+    else if (cmd.includes('flashlight') || cmd.includes('torch')) {
+      const turnOn = cmd.includes('on') || cmd.includes('chalu') || cmd.includes('jalo');
+      return await executeSystemAction(turnOn ? 'turn_on_flashlight' : 'turn_off_flashlight');
+    }
+    else if (cmd.includes('open') || cmd.includes('chalaye') || cmd.includes('chalao')) {
+      // Find app name
+      let app = "Chrome";
+      if (cmd.includes('youtube')) app = "YouTube";
+      else if (cmd.includes('spotify')) app = "Spotify";
+      else if (cmd.includes('maps') || cmd.includes('map')) app = "Maps";
+      else if (cmd.includes('whatsapp')) app = "WhatsApp";
+      return await executeSystemAction('open_app', { appName: app });
+    }
+    else if (cmd.includes('power level') || cmd.includes('capacity')) {
+      let val = 100;
+      if (cmd.includes('200')) val = 200;
+      else if (cmd.includes('25') || cmd.includes('low')) val = 25;
+      return await executeSystemAction('adjust_power_level', { level: val });
+    }
+    else if (cmd.includes('friday') || cmd.includes('theme friday')) {
+      await executeSystemAction('change_theme', { theme: 'friday' });
+      return "Friday system shell interface active.";
+    }
+    else if (cmd.includes('jarvis') || cmd.includes('theme jarvis')) {
+      await executeSystemAction('change_theme', { theme: 'jarvis' });
+      return "Jarvis standard core matrix loaded.";
+    }
+    else if (cmd.includes('house party')) {
+      return await executeSystemAction('trigger_protocol', { protocol: 'house party' });
+    }
+    else if (cmd.includes('clean slate')) {
+      return await executeSystemAction('trigger_protocol', { protocol: 'clean slate' });
+    }
+
+    // Default witty AI responses
+    const responses = [
+      "I have processed your query, sir. However, Stark network firewalls limit my ability to execute that action directly without a Gemini connection.",
+      "Indeed, sir. Might I suggest setting up the Google AI Studio Gemini API Key in Settings to enable full intelligence?",
+      "Tony would likely advise against that, but as I am programmed to assist, I will log the request.",
+      "Fascinating inquiry. I am monitoring multiple encrypted frequencies for further information.",
+      "Telemetry signals indicate normal levels. I remain at your service."
+    ];
+    const randomRes = responses[Math.floor(Math.random() * responses.length)];
+    speak(randomRes);
+    return randomRes;
+  };
+
+  // Google AI Studio Gemini API content generator
+  const getGeminiResponse = async (userText) => {
+    if (!apiKey) {
+      addTelemetryLog("Gemini API Key missing. Falling back to local offline mode.", "warn");
+      return await processLocalTextCommand(userText);
+    }
+
+    addTelemetryLog("Sending telemetry query to Gemini API...", "info");
+    
+    // Construct system instructions
+    const systemPrompt = `You are ${theme === 'friday' ? 'FRIDAY' : 'JARVIS'}, Tony Stark's advanced artificial intelligence system assistant. 
+    Keep your answers concise, intelligent, dry, and polite. 
+    If the theme is JARVIS, speak with British accents, and call the user 'Sir'.
+    If the theme is FRIDAY, act energetic and call the user 'Boss' or 'Sir'.
+    Always respond directly to the user's intent. 
+    
+    You have direct control of the mobile device capabilities and HUD user interface. If the user asks you to perform an action (e.g., toggle flashlight/torch, open an app, trigger red alert/safety/diagnostics scan, adjust power levels), you MUST call the matching tool/function immediately.`;
+
+    const requestPayload = {
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: userText }]
+        }
+      ],
+      systemInstruction: {
+        parts: [{ text: systemPrompt }]
+      },
+      tools: [
+        {
+          functionDeclarations: [
+            {
+              name: "turn_on_flashlight",
+              description: "Turns on the device camera flashlight / torch."
+            },
+            {
+              name: "turn_off_flashlight",
+              description: "Turns off the device camera flashlight / torch."
+            },
+            {
+              name: "open_app",
+              description: "Opens a mobile app on the phone by its name.",
+              parameters: {
+                type: "OBJECT",
+                properties: {
+                  appName: {
+                    type: "STRING",
+                    description: "The name of the app to launch (e.g. YouTube, Spotify, Chrome, Maps, WhatsApp)."
+                  }
+                },
+                required: ["appName"]
+              }
+            },
+            {
+              name: "change_theme",
+              description: "Changes the HUD UI theme color scheme.",
+              parameters: {
+                type: "OBJECT",
+                properties: {
+                  theme: {
+                    type: "STRING",
+                    description: "The theme name. Allowed values: 'jarvis', 'friday', 'safety', 'redalert'."
+                  }
+                },
+                required: ["theme"]
+              }
+            },
+            {
+              name: "adjust_power_level",
+              description: "Configures the Arc Core system power level percentage.",
+              parameters: {
+                type: "OBJECT",
+                properties: {
+                  level: {
+                    type: "NUMBER",
+                    description: "The power level percentage (e.g., 25, 100, 200)."
+                  }
+                },
+                required: ["level"]
+              }
+            },
+            {
+              name: "trigger_protocol",
+              description: "Triggers specific suit defensive or testing protocols.",
+              parameters: {
+                type: "OBJECT",
+                properties: {
+                  protocol: {
+                    type: "STRING",
+                    description: "The protocol to trigger. Allowed values: 'diagnostics scan', 'repulsor test', 'house party', 'clean slate'."
+                  }
+                },
+                required: ["protocol"]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
     try {
-      const res = await fetch(`${API_BASE}/api/config`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedConfig)
+        body: JSON.stringify(requestPayload)
       });
-      if (res.ok) {
-        const data = await res.json();
-        setConfig(data.config);
-        alert("Portfolio Configuration pushed and updated LIVE on the website successfully!");
+
+      if (!response.ok) {
+        throw new Error(`HTTP Error: ${response.status}`);
       }
-    } catch (err) {
-      alert("Failed to publish config: " + err.message);
+
+      const data = await response.json();
+      const candidate = data.candidates?.[0];
+      const part = candidate?.content?.parts?.[0];
+
+      if (part?.functionCall) {
+        const { name, args } = part.functionCall;
+        addTelemetryLog(`AI invoked function call: ${name}()`, "info");
+        const actionResult = await executeSystemAction(name, args);
+        speak(actionResult);
+        return actionResult;
+      } else if (part?.text) {
+        const textResult = part.text;
+        speak(textResult);
+        return textResult;
+      }
+
+      return "I processed your request, sir. Telemetry is stable.";
+    } catch (e) {
+      console.error("Gemini API request failed:", e);
+      addTelemetryLog(`Gemini request failed: ${e.message}`, "crit");
+      return await processLocalTextCommand(userText);
     }
   };
 
-  // Modal actions handlers for Editor
-  const openEditorModal = (type, item = null) => {
-    setEditorModal(type);
-    if (item) {
-      setModalItem({ ...item });
+  const handleUserTextSubmit = async (text) => {
+    if (!text.trim()) return;
+    
+    // Add user message to UI
+    setChatLogs(prev => [...prev, { sender: "Operator", text, isUser: true }]);
+    playBeep(700, 'sine', 0.08, 0.04);
+    
+    // Call Gemini or local engine
+    const reply = await getGeminiResponse(text);
+    
+    // Add AI message to UI
+    setChatLogs(prev => [...prev, { 
+      sender: currentThemeRef.current === 'friday' ? "F.R.I.D.A.Y." : "J.A.R.V.I.S.", 
+      text: reply, 
+      isUser: false 
+    }]);
+  };
+
+  // Suit Part Diagnostics Poller onClick handlers
+  const handleSuitPartClick = (partId) => {
+    playBeep(900, 'sine', 0.05, 0.05);
+    const partsMap = {
+      'part-helmet': {
+        title: "Helmet Optic System",
+        details: [
+          { name: "Optic HUD Sensors", val: "ONLINE [100%]", status: "ok" },
+          { name: "HUD Eye Gaskets", val: "SECURE [100%]", status: "ok" },
+          { name: "Target Tracker", val: "STANDBY", status: "ok" },
+          { name: "Atmospheric PSI", val: "1.0 atm", status: "ok" }
+        ]
+      },
+      'part-neck': {
+        title: "Cervical Stabilization",
+        details: [
+          { name: "Neck Actuators", val: "ONLINE [100%]", status: "ok" },
+          { name: "Stabilization", val: "ACTIVE", status: "ok" },
+          { name: "Thermal Dissipator", val: "NORMAL [34°C]", status: "ok" }
+        ]
+      },
+      'part-chest': {
+        title: "Arc Core Housing Interface",
+        details: [
+          { name: "Power Line", val: "CONNECTED", status: "ok" },
+          { name: "Energy Grid Flow", val: "99.8%", status: "ok" },
+          { name: "Shield Matrix Gen", val: "ONLINE", status: "ok" },
+          { name: "Aux Power Capacitors", val: "CHARGED [100%]", status: "ok" }
+        ]
+      },
+      'part-left-arm': {
+        title: "Left Repulsor Arm",
+        details: [
+          { name: "Repulsor Capacitor", val: "CHARGED [100%]", status: "ok" },
+          { name: "Missile Launcher", val: "RE-ARMING", status: "warning" },
+          { name: "Laser Array Matrix", val: "OPERATIONAL", status: "ok" }
+        ]
+      },
+      'part-right-arm': {
+        title: "Right Repulsor Arm",
+        details: [
+          { name: "Repulsor Capacitor", val: "CHARGED [100%]", status: "ok" },
+          { name: "Micro-Munition Cell", val: "ACTIVE", status: "ok" },
+          { name: "Nanotech Armor", val: "REPAIRING [100%]", status: "ok" }
+        ]
+      },
+      'part-left-leg': {
+        title: "Left Jet Stabilizer",
+        details: [
+          { name: "Thruster Output", val: "94% OUTPUT", status: "ok" },
+          { name: "Vectoring Nozzle", val: "ACTIVE", status: "ok" },
+          { name: "Thermal Core Temp", val: "42°C", status: "ok" }
+        ]
+      },
+      'part-right-leg': {
+        title: "Right Jet Stabilizer",
+        details: [
+          { name: "Thruster Output", val: "94% OUTPUT", status: "ok" },
+          { name: "Vectoring Nozzle", val: "ACTIVE", status: "ok" },
+          { name: "Thermal Core Temp", val: "41°C", status: "ok" }
+        ]
+      }
+    };
+
+    const detailsObj = partsMap[partId];
+    if (detailsObj) {
+      setDiagPart(detailsObj);
+      addTelemetryLog(`Diagnostics polled for node: ${detailsObj.title}`, "info");
+    }
+  };
+
+  // Adjust reactor power manually by clicking it
+  const handleArcReactorClick = () => {
+    const curPower = systemPower;
+    if (curPower === 100) {
+      executeSystemAction('adjust_power_level', { level: 200 });
+      speak("Arc Reactor output boosted to two hundred percent, sir. Extreme warning is advised.");
+      playSweep(440, 1200, 1.0, 'sawtooth', 0.08);
+    } else if (curPower === 200) {
+      executeSystemAction('adjust_power_level', { level: 25 });
+      speak("Arc core overload avoided. Entering low energy reserve mode, sir.");
+      playSweep(800, 100, 1.0, 'sine', 0.06);
     } else {
-      // Set defaults for new item creation
-      if (type === 'service_add') {
-        setModalItem({ title: '', desc: '', icon: 'Zap', color: 'purple' });
-      } else if (type === 'project_add') {
-        setModalItem({ title: '', img: '/project_crm.jpg', tag: 'Click to Test Live Demo', type: 'crm' });
-      } else if (type === 'testimonial_add') {
-        setModalItem({ name: '', company: '', quote: '', avatar: 'CL', rating: 5 });
-      }
+      executeSystemAction('adjust_power_level', { level: 100 });
+      speak("Arc core stabilized. Normal power restored.");
+      playSweep(100, 500, 0.5, 'sine', 0.05);
     }
   };
 
-  const handleModalSubmit = (e) => {
-    e.preventDefault();
-    if (!config) return;
-
-    let updatedConfig = { ...config };
-
-    if (editorModal === 'service_add') {
-      const newId = config.services.length > 0 ? Math.max(...config.services.map(s => s.id)) + 1 : 1;
-      updatedConfig.services = [...config.services, { ...modalItem, id: newId }];
-    } else if (editorModal === 'service_edit') {
-      updatedConfig.services = config.services.map(s => s.id === modalItem.id ? modalItem : s);
-    } else if (editorModal === 'project_add') {
-      const newId = config.projects.length > 0 ? Math.max(...config.projects.map(p => p.id)) + 1 : 1;
-      updatedConfig.projects = [...config.projects, { ...modalItem, id: newId }];
-    } else if (editorModal === 'project_edit') {
-      updatedConfig.projects = config.projects.map(p => p.id === modalItem.id ? modalItem : p);
-    } else if (editorModal === 'testimonial_add') {
-      const newId = config.testimonials.length > 0 ? Math.max(...config.testimonials.map(t => t.id)) + 1 : 1;
-      updatedConfig.testimonials = [...config.testimonials, { ...modalItem, id: newId }];
-    } else if (editorModal === 'testimonial_edit') {
-      updatedConfig.testimonials = config.testimonials.map(t => t.id === modalItem.id ? modalItem : t);
-    }
-
-    setConfig(updatedConfig);
-    handleSaveConfig(updatedConfig);
-    setEditorModal(null);
-    setModalItem(null);
+  // Handle slide controls
+  const handleSliderChange = (name, val) => {
+    setSliders(prev => ({ ...prev, [name]: val }));
+    playBeep(300 + val * 4, 'sine', 0.03, 0.015);
+    addTelemetryLog(`Power allocation: ${name.charAt(0).toUpperCase() + name.slice(1)} adjusted to ${val}%.`, "info");
   };
 
-  // Delete directly from array helper
-  const handleDeleteConfigArrayItem = (arrayKey, id) => {
-    if (!confirm("Are you sure you want to remove this item? This updates instantly.")) return;
-    let updatedConfig = { ...config };
-    updatedConfig[arrayKey] = config[arrayKey].filter(item => item.id !== id);
-    setConfig(updatedConfig);
-    handleSaveConfig(updatedConfig);
+  // Save Settings Gemini Key
+  const handleSaveSettings = () => {
+    localStorage.setItem('STARK_GEMINI_KEY', tempKey);
+    setApiKey(tempKey);
+    setShowSettings(false);
+    playBeep(900, 'sine', 0.15, 0.06);
+    addTelemetryLog("Security credentials updated in local secure storage.", "info");
+    speak("Credentials updated, sir.");
+  };
+
+  const handleOpenSettings = () => {
+    setTempKey(apiKey);
+    setShowSettings(true);
+    playBeep(600);
   };
 
   return (
-    <div className="admin-app">
-      {/* HEADER BAR */}
-      <header className="admin-header">
-        <div className="header-logo-section">
-          <div className="status-indicator">
-            <span className="dot-pulse"></span>
-            <span className="dot"></span>
-          </div>
-          <div>
-            <h1 className="header-title">VEXOTEAMX</h1>
-            <span className="header-subtitle">Live Admin Panel</span>
-          </div>
-        </div>
+    <div className="jarvis-body">
+      {/* Background filters */}
+      <svg style={{ display: 'none' }}>
+        <defs>
+          <filter id="glow-filter" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="5" result="blur" />
+            <feMerge>
+              <feMergeNode in="blur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+          <filter id="glow-filter-heavy" x="-40%" y="-40%" width="180%" height="180%">
+            <feGaussianBlur stdDeviation="8" result="blur1" />
+            <feGaussianBlur stdDeviation="3" result="blur2" />
+            <feMerge>
+              <feMergeNode in="blur1" />
+              <feMergeNode in="blur2" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+      </svg>
 
-        <div className="header-controls">
-          <button 
-            className="sound-toggle-btn"
-            onClick={() => setSoundEnabled(!soundEnabled)}
-            title={soundEnabled ? "Mute alert audio" : "Unmute alert audio"}
+      {/* Booting Loader */}
+      <AnimatePresence>
+        {!booted && (
+          <motion.div 
+            id="boot-overlay"
+            exit={{ opacity: 0 }}
+            transition={{ duration: 1.0 }}
           >
-            {soundEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
-          </button>
-          <button className="sync-btn" onClick={fetchData} title="Re-sync Database">
-            <RefreshCw size={18} className={loading ? 'spinning' : ''} />
-          </button>
-        </div>
-      </header>
+            <div className="boot-content">
+              <div className="boot-logo">STARK OS v9.64</div>
+              <div className="boot-status">{bootStatusText}</div>
+              <div className="boot-progress">
+                <div 
+                  className="boot-progress-bar" 
+                  style={{ width: `${bootProgress}%` }}
+                ></div>
+              </div>
+              {bootProgress >= 100 && (
+                <button className="boot-btn" onClick={handleBootComplete}>
+                  INITIALIZE J.A.R.V.I.S.
+                </button>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-      {/* ERROR / DISCONNECT BARS */}
-      {error && (
-        <div className="admin-error-bar">
-          <AlertTriangle size={16} />
-          <span>{error}</span>
-          <button onClick={fetchData} className="reconnect-link-btn">Retry Sync</button>
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="settings-overlay">
+          <div className="settings-card">
+            <h3>Secure Uplink Settings</h3>
+            <label>Google Gemini API Key</label>
+            <input 
+              type="password" 
+              value={tempKey} 
+              onChange={(e) => setTempKey(e.target.value)} 
+              placeholder="Paste your Gemini API Key here..."
+            />
+            <div className="settings-help">
+              This app uses the Gemini 1.5 Flash API as Jarvis's brain. You can generate a free API Key from Google AI Studio. The key is saved locally in your phone storage and is never uploaded anywhere.
+            </div>
+            <div className="settings-actions">
+              <button className="settings-btn save" onClick={handleSaveSettings}>SAVE KEY</button>
+              <button className="settings-btn cancel" onClick={() => setShowSettings(false)}>CANCEL</button>
+            </div>
+          </div>
         </div>
       )}
 
-      {/* OVERLAY REAL-TIME TOAST ALERTS */}
-      <AnimatePresence>
-        {latestAlert && (
-          <motion.div 
-            className="realtime-alert-toast"
-            initial={{ opacity: 0, y: -50, scale: 0.9 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: -20, scale: 0.9 }}
-            transition={{ type: 'spring', damping: 15 }}
-          >
-            <div className="toast-header-bar">
-              <span className="alert-badge pulse-anim">
-                <Bell size={12} style={{ marginRight: '4px' }} />
-                NEW REALTIME COORDINATES
+      {/* Header */}
+      {booted && (
+        <>
+          <header>
+            <div className="logo-container">
+              <span className="stark-logo">STARK</span>
+              <span style={{ color: 'rgba(255,255,255,0.3)', fontWeight: 300 }}>|</span>
+              <span className="os-label">
+                {theme === 'friday' ? 'F.R.I.D.A.Y.' : theme === 'redalert' ? 'RED ALERT CONSOLE' : theme === 'safety' ? 'SAFETY MODE' : 'J.A.R.V.I.S. OS'}
               </span>
-              <button className="toast-close" onClick={() => setLatestAlert(null)}><X size={14} /></button>
             </div>
-            <div className="toast-body">
-              <h4 style={{ color: '#fff', fontSize: '1rem', fontWeight: '700' }}>
-                {latestAlert.type === 'booking' ? 'New Consultation Scheduled!' : 'New Callback Request!'}
-              </h4>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-gray)', marginTop: '4px' }}>
-                {latestAlert.type === 'booking'
-                  ? `${latestAlert.data.name} booked ${latestAlert.data.service} for ${latestAlert.data.date} at ${latestAlert.data.time}`
-                  : `${latestAlert.data.name} requested callback on ${latestAlert.data.phone} (${latestAlert.data.service})`
-                }
-              </p>
+            
+            <div className="hud-stats-header">
+              <div className="stat-item">
+                <span className="stat-label">Power Core</span>
+                <span className="stat-value">{systemPower}%</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Connection</span>
+                <span className="stat-value" style={{ color: 'var(--green-bright)' }}>SECURE</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-label">Uplink Code</span>
+                <span className="stat-value" style={{ color: apiKey ? 'var(--green-bright)' : 'var(--orange-bright)' }}>
+                  {apiKey ? 'API CONNECTED' : 'OFFLINE MODE'}
+                </span>
+              </div>
             </div>
-            <div className="toast-footer">
+
+            <div className="controls-container">
               <button 
-                className="toast-action-btn"
+                className={`hud-btn ${voiceEnabled ? 'active' : ''}`} 
                 onClick={() => {
-                  setActiveTab(latestAlert.type === 'booking' ? 'bookings' : 'calls');
-                  setLatestAlert(null);
+                  playBeep(400);
+                  setVoiceEnabled(!voiceEnabled);
+                  addTelemetryLog(`Voice output toggled ${!voiceEnabled ? 'ON' : 'OFF'}.`);
                 }}
               >
-                Open Dashboard Views
-                <ArrowRight size={12} style={{ marginLeft: '4px' }} />
+                <Volume2 size={13} /> {voiceEnabled ? 'VOICE ON' : 'VOICE OFF'}
+              </button>
+              <button 
+                className={`hud-btn ${isListening ? 'active' : ''}`}
+                onClick={toggleMicListening}
+              >
+                <Radio size={13} className={isListening ? 'animate-pulse' : ''} /> {isListening ? 'LISTENING...' : 'MIC OFF'}
+              </button>
+              <button 
+                className={`hud-btn ${sfxEnabled ? 'active' : ''}`}
+                onClick={() => {
+                  setSfxEnabled(!sfxEnabled);
+                  playBeep(500);
+                  addTelemetryLog(`Sound synthesizers toggled ${!sfxEnabled ? 'ON' : 'OFF'}.`);
+                }}
+              >
+                🎵 SFX {sfxEnabled ? 'ON' : 'OFF'}
+              </button>
+              <button className="hud-btn" onClick={handleOpenSettings}>
+                <SettingsIcon size={13} /> SETTINGS
               </button>
             </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+          </header>
 
-      {/* MAIN VIEWPORT */}
-      <main className="admin-main-content">
-        {loading && !config ? (
-          <div className="loading-center">
-            <div className="spinner"></div>
-            <p style={{ marginTop: '15px', color: 'var(--text-gray)' }}>Synchronizing Secure Database SQLite Engine...</p>
-          </div>
-        ) : (
-          <div style={{ paddingBottom: '80px' }}>
-            
-            {/* 1. DASHBOARD VIEW */}
-            {activeTab === 'dashboard' && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-pane">
-                {/* Stats Row */}
-                <div className="stats-row">
-                  <div className="dashboard-card border-purple">
-                    <span className="stat-card-label">Total Bookings</span>
-                    <div className="stat-card-value">{bookings.length}</div>
-                    <span className="stat-card-sub">{bookings.filter(b => b.status === 'pending').length} Pending Review</span>
-                  </div>
-                  <div className="dashboard-card border-pink">
-                    <span className="stat-card-label">Callbacks Requested</span>
-                    <div className="stat-card-value">{calls.length}</div>
-                    <span className="stat-card-sub">{calls.filter(c => c.status === 'pending').length} Pending Callbacks</span>
-                  </div>
-                  <div className="dashboard-card border-blue">
-                    <span className="stat-card-label">Services Online</span>
-                    <div className="stat-card-value">{config?.services.length || 0}</div>
-                    <span className="stat-card-sub">Active on VexoteamX</span>
-                  </div>
-                </div>
-
-                {/* Notifications Alert Center logs */}
-                <div className="dashboard-section" style={{ marginTop: '30px' }}>
-                  <h3 className="section-title-label">Live Activity Logs</h3>
-                  <div className="logs-panel">
-                    {notifications.length === 0 ? (
-                      <p style={{ color: 'var(--text-gray-dark)', fontSize: '0.85rem', fontStyle: 'italic', textAlign: 'center', padding: '20px 0' }}>
-                        No alerts in current session. Active Websocket listens to booking requests.
-                      </p>
-                    ) : (
-                      <div className="logs-list">
-                        {notifications.map(n => (
-                          <div key={n.id} className="log-item-row">
-                            <span className="log-time">{n.time}</span>
-                            <span className="log-text">{n.text}</span>
-                            <span className="log-badge-active">WebSocket</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Quick Info / Fast updates */}
-                <div className="dashboard-quick-actions" style={{ marginTop: '30px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-                  <div className="dashboard-card" style={{ background: 'rgba(255,255,255,0.01)' }}>
-                    <h3 style={{ color: '#fff', fontSize: '1.1rem', marginBottom: '15px' }}>Latest Consultation</h3>
-                    {bookings.length > 0 ? (
-                      <div>
-                        <div style={{ fontWeight: '700', color: '#fff' }}>{bookings[0].name}</div>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-gray)', marginTop: '4px' }}>
-                          Service: {bookings[0].service} <br/>
-                          Schedule: {bookings[0].date} @ {bookings[0].time}
-                        </div>
-                        <span className={`crm-status-tag ${bookings[0].status}`} style={{ display: 'inline-block', marginTop: '10px' }}>
-                          {bookings[0].status}
-                        </span>
-                      </div>
-                    ) : (
-                      <p style={{ color: 'var(--text-gray-dark)', fontSize: '0.85rem' }}>No bookings in SQLite table.</p>
-                    )}
-                  </div>
-
-                  <div className="dashboard-card" style={{ background: 'rgba(255,255,255,0.01)' }}>
-                    <h3 style={{ color: '#fff', fontSize: '1.1rem', marginBottom: '15px' }}>Latest Callback Request</h3>
-                    {calls.length > 0 ? (
-                      <div>
-                        <div style={{ fontWeight: '700', color: '#fff' }}>{calls[0].name}</div>
-                        <div style={{ fontSize: '0.85rem', color: 'var(--text-gray)', marginTop: '4px' }}>
-                          Phone: {calls[0].phone} <br/>
-                          Service interest: {calls[0].service}
-                        </div>
-                        <span className={`crm-status-tag ${calls[0].status === 'pending' ? 'proposal' : 'won'}`} style={{ display: 'inline-block', marginTop: '10px' }}>
-                          {calls[0].status}
-                        </span>
-                      </div>
-                    ) : (
-                      <p style={{ color: 'var(--text-gray-dark)', fontSize: '0.85rem' }}>No calls in table.</p>
-                    )}
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-            {/* 2. BOOKINGS VIEWER */}
-            {activeTab === 'bookings' && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-pane">
-                <div className="pane-header-row">
-                  <h2 className="pane-title">Consultation Bookings</h2>
-                  <span className="pane-subtitle">{bookings.length} records found in database</span>
-                </div>
-
-                <div className="bookings-vertical-list" style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginTop: '20px' }}>
-                  {bookings.length === 0 ? (
-                    <div className="empty-state-view">
-                      <Calendar size={48} style={{ color: 'var(--text-gray-dark)' }} />
-                      <p style={{ marginTop: '15px', color: 'var(--text-gray)' }}>No booking registrations found.</p>
-                    </div>
-                  ) : (
-                    bookings.map(booking => (
-                      <div key={booking.id} className="booking-admin-card">
-                        <div className="booking-card-main-info">
-                          <div>
-                            <span className="booking-card-service">{booking.service}</span>
-                            <h3 className="booking-card-client">{booking.name}</h3>
-                            <div className="booking-card-meta">
-                              <span><Mail size={12} /> {booking.email || 'N/A'}</span>
-                              <span><Phone size={12} /> {booking.phone}</span>
-                            </div>
-                            {booking.notes && (
-                              <p className="booking-card-notes">
-                                <strong>Notes:</strong> {booking.notes}
-                              </p>
-                            )}
-                          </div>
-
-                          <div className="booking-card-timing">
-                            <span className="timing-badge">
-                              <Calendar size={12} style={{ marginRight: '6px' }} />
-                              {booking.date} @ {booking.time}
-                            </span>
-                            <span className={`crm-status-tag ${booking.status}`} style={{ textTransform: 'uppercase', fontSize: '0.75rem', padding: '4px 10px', marginTop: '10px', textAlign: 'center', display: 'block' }}>
-                              {booking.status}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="booking-card-action-bar">
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            {booking.status === 'pending' && (
-                              <button 
-                                className="action-btn-mini btn-confirm"
-                                onClick={() => handleUpdateBookingStatus(booking.id, 'confirmed')}
-                              >
-                                Confirm
-                              </button>
-                            )}
-                            {booking.status === 'confirmed' && (
-                              <button 
-                                className="action-btn-mini btn-confirm"
-                                onClick={() => handleUpdateBookingStatus(booking.id, 'completed')}
-                              >
-                                Mark Complete
-                              </button>
-                            )}
-                            {booking.status !== 'cancelled' && booking.status !== 'completed' && (
-                              <button 
-                                className="action-btn-mini btn-cancel"
-                                onClick={() => handleUpdateBookingStatus(booking.id, 'cancelled')}
-                              >
-                                Cancel
-                              </button>
-                            )}
-                          </div>
-                          <button 
-                            className="delete-card-btn"
-                            onClick={() => handleDeleteBooking(booking.id)}
-                            title="Delete Record"
-                          >
-                            <Trash size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </motion.div>
-            )}
-
-            {/* 3. CALL CALLBACKS VIEWER */}
-            {activeTab === 'calls' && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-pane">
-                <div className="pane-header-row">
-                  <h2 className="pane-title">Callback Requests</h2>
-                  <span className="pane-subtitle">{calls.length} entries queued</span>
-                </div>
-
-                <div className="bookings-vertical-list" style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginTop: '20px' }}>
-                  {calls.length === 0 ? (
-                    <div className="empty-state-view">
-                      <PhoneCall size={48} style={{ color: 'var(--text-gray-dark)' }} />
-                      <p style={{ marginTop: '15px', color: 'var(--text-gray)' }}>No call requests in the queue.</p>
-                    </div>
-                  ) : (
-                    calls.map(call => (
-                      <div key={call.id} className="booking-admin-card" style={{ borderLeft: call.status === 'pending' ? '3px solid var(--primary-pink)' : '3px solid #10b981' }}>
-                        <div className="booking-card-main-info" style={{ alignItems: 'center' }}>
-                          <div>
-                            <span className="booking-card-service" style={{ color: 'var(--primary-pink)', background: 'rgba(236,72,153,0.1)' }}>{call.service}</span>
-                            <h3 className="booking-card-client" style={{ marginTop: '5px' }}>{call.name}</h3>
-                            <a href={`tel:${call.phone}`} className="call-dial-link" style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '1rem', color: 'var(--primary-blue)', fontWeight: '700', marginTop: '6px' }}>
-                              <PhoneCall size={14} />
-                              {call.phone}
-                            </a>
-                          </div>
-
-                          <div style={{ textAlign: 'right' }}>
-                            <span className={`crm-status-tag ${call.status === 'pending' ? 'proposal' : 'won'}`} style={{ textTransform: 'uppercase', fontSize: '0.75rem', padding: '4px 10px' }}>
-                              {call.status}
-                            </span>
-                            <span style={{ fontSize: '0.7rem', color: 'var(--text-gray-dark)', display: 'block', marginTop: '8px' }}>
-                              Requested: {new Date(call.created_at).toLocaleString()}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="booking-card-action-bar">
-                          <div style={{ display: 'flex', gap: '8px' }}>
-                            {call.status === 'pending' && (
-                              <button 
-                                className="action-btn-mini btn-confirm"
-                                style={{ background: '#10b981' }}
-                                onClick={() => handleUpdateCallStatus(call.id, 'completed')}
-                              >
-                                Mark Called
-                              </button>
-                            )}
-                          </div>
-                          <button 
-                            className="delete-card-btn"
-                            onClick={() => handleDeleteCall(call.id)}
-                            title="Delete Request"
-                          >
-                            <Trash size={14} />
-                          </button>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </motion.div>
-            )}
-
-            {/* 4. VISUAL EDITOR PANEL */}
-            {activeTab === 'editor' && config && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-pane">
-                <div className="pane-header-row">
-                  <h2 className="pane-title">Portfolio Manager</h2>
-                  <span className="pane-subtitle">Live website updates control</span>
-                </div>
-
-                <div className="editor-accordion-list" style={{ display: 'flex', flexDirection: 'column', gap: '25px', marginTop: '20px' }}>
-                  
-                  {/* Hero Settings */}
-                  <div className="editor-card-section">
-                    <h3 className="editor-section-title"><Rocket size={18} /> Hero Section Wording</h3>
-                    <div className="crm-form" style={{ maxWidth: '100%', border: 'none', background: 'none', padding: '0', marginTop: '15px' }}>
-                      <div className="crm-form-group">
-                        <label>Main Headline Title</label>
-                        <input 
-                          type="text" 
-                          value={config.hero_title}
-                          onChange={(e) => setConfig({ ...config, hero_title: e.target.value })}
-                          style={{ width: '100%' }}
-                        />
-                      </div>
-                      <div className="crm-form-group" style={{ marginTop: '10px' }}>
-                        <label>Subtext Description</label>
-                        <textarea 
-                          value={config.hero_desc}
-                          onChange={(e) => setConfig({ ...config, hero_desc: e.target.value })}
-                          rows="3"
-                          style={{ width: '100%', background: '#08070d', border: '1px solid rgba(255,255,255,0.1)', color: '#fff', borderRadius: '8px', padding: '10px', fontFamily: 'inherit', resize: 'none' }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Services Editor */}
-                  <div className="editor-card-section">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <h3 className="editor-section-title"><Zap size={18} /> Services Portfolio ({config.services.length})</h3>
-                      <button className="add-item-btn" onClick={() => openEditorModal('service_add')}>
-                        <Plus size={14} /> Add Service
-                      </button>
-                    </div>
-
-                    <div className="editor-items-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginTop: '15px' }}>
-                      {config.services.map(svc => (
-                        <div key={svc.id} className="editor-item-box">
-                          <div>
-                            <h4 style={{ color: '#fff', fontWeight: '700' }}>{svc.title}</h4>
-                            <p style={{ fontSize: '0.8rem', color: 'var(--text-gray)', marginTop: '4px' }}>{svc.desc}</p>
-                            <span style={{ fontSize: '0.7rem', color: 'var(--primary-blue)', background: 'rgba(6,182,212,0.1)', padding: '2px 8px', borderRadius: '4px', display: 'inline-block', marginTop: '8px' }}>
-                              Icon: {svc.icon} ({svc.color})
-                            </span>
-                          </div>
-                          <div className="item-box-actions">
-                            <button className="item-action-edit" onClick={() => openEditorModal('service_edit', svc)}><Edit size={14} /></button>
-                            <button className="item-action-delete" onClick={() => handleDeleteConfigArrayItem('services', svc.id)}><Trash size={14} /></button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Projects/Demos Editor */}
-                  <div className="editor-card-section">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <h3 className="editor-section-title"><Code size={18} /> Projects & Case Studies ({config.projects.length})</h3>
-                      <button className="add-item-btn" onClick={() => openEditorModal('project_add')}>
-                        <Plus size={14} /> Add Project
-                      </button>
-                    </div>
-
-                    <div className="editor-items-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginTop: '15px' }}>
-                      {config.projects.map(proj => (
-                        <div key={proj.id} className="editor-item-box">
-                          <div>
-                            <h4 style={{ color: '#fff', fontWeight: '700' }}>{proj.title}</h4>
-                            <p style={{ fontSize: '0.8rem', color: 'var(--text-gray-dark)', marginTop: '4px' }}>Demo Type: {proj.type}</p>
-                            <img src={proj.img} alt={proj.title} style={{ width: '80px', height: '45px', borderRadius: '4px', marginTop: '8px', objectFit: 'cover', border: '1px solid rgba(255,255,255,0.1)' }} />
-                          </div>
-                          <div className="item-box-actions">
-                            <button className="item-action-edit" onClick={() => openEditorModal('project_edit', proj)}><Edit size={14} /></button>
-                            <button className="item-action-delete" onClick={() => handleDeleteConfigArrayItem('projects', proj.id)}><Trash size={14} /></button>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Contact channels */}
-                  <div className="editor-card-section">
-                    <h3 className="editor-section-title"><Mail size={18} /> Contact Coordinates</h3>
-                    <div className="crm-form" style={{ maxWidth: '100%', border: 'none', background: 'none', padding: '0', marginTop: '15px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
-                      <div className="crm-form-group">
-                        <label>Business Email</label>
-                        <input 
-                          type="email" 
-                          value={config.contact_email}
-                          onChange={(e) => setConfig({ ...config, contact_email: e.target.value })}
-                        />
-                      </div>
-                      <div className="crm-form-group">
-                        <label>WhatsApp Number</label>
-                        <input 
-                          type="text" 
-                          value={config.contact_phone}
-                          onChange={(e) => setConfig({ ...config, contact_phone: e.target.value })}
-                        />
-                      </div>
-                      <div className="crm-form-group" style={{ gridColumn: 'span 2' }}>
-                        <label>Address / HQ Location</label>
-                        <input 
-                          type="text" 
-                          value={config.contact_address}
-                          onChange={(e) => setConfig({ ...config, contact_address: e.target.value })}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Save Changes button */}
-                  <button 
-                    className="save-config-btn"
-                    onClick={() => handleSaveConfig()}
-                  >
-                    <Save size={18} style={{ marginRight: '10px' }} />
-                    Publish Configuration Changes Live
-                  </button>
-                </div>
-              </motion.div>
-            )}
-
-            {/* 5. CONNECTION SETTINGS VIEW */}
-            {activeTab === 'settings' && (
-              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-pane">
-                <div className="pane-header-row">
-                  <h2 className="pane-title">Server Connection</h2>
-                  <span className="pane-subtitle">Configure backend API connection coordinates</span>
-                </div>
-
-                <div className="editor-card-section" style={{ marginTop: '20px' }}>
-                  <h3 className="editor-section-title"><Cpu size={18} /> API Endpoint URL</h3>
-                  <p style={{ color: 'var(--text-gray)', fontSize: '0.85rem', margin: '8px 0 20px 0', lineHeight: '1.5' }}>
-                    Paste the production Backend URL (e.g., from Render, Railway, or your custom server). 
-                    The mobile app will connect to this endpoint for all operations.
-                  </p>
-
-                  <div className="crm-form" style={{ maxWidth: '100%', border: 'none', background: 'none', padding: '0' }}>
-                    <div className="crm-form-group">
-                      <label>Backend URL (HTTPS or HTTP)</label>
-                      <input 
-                        type="url" 
-                        placeholder="https://your-backend.onrender.com"
-                        value={tempApiUrl}
-                        onChange={(e) => setTempApiUrl(e.target.value)}
-                        style={{ width: '100%', background: 'rgba(255,255,255,0.04)', color: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}
-                      />
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
-                      <button 
-                        type="button"
-                        className="btn-cta btn-cta-primary" 
-                        onClick={() => {
-                          let formatted = tempApiUrl.trim();
-                          if (formatted && !formatted.startsWith('http://') && !formatted.startsWith('https://')) {
-                            formatted = 'https://' + formatted;
-                          }
-                          // Remove trailing slash
-                          formatted = formatted.replace(/\/+$/, '');
-                          localStorage.setItem('VEXO_API_BASE', formatted);
-                          setApiBase(formatted);
-                          alert("Backend URL saved successfully! Reconnecting services...");
-                          fetchData();
-                        }}
-                      >
-                        Save & Reconnect
-                      </button>
-                      <button 
-                        type="button"
-                        className="btn-hero btn-hero-secondary"
-                        style={{ padding: '10px 20px' }}
-                        onClick={() => {
-                          const defaultUrl = 'http://67.205.137.231:3001';
-                          setTempApiUrl(defaultUrl);
-                          localStorage.setItem('VEXO_API_BASE', defaultUrl);
-                          setApiBase(defaultUrl);
-                          alert("Reset to default server IP. Reconnecting...");
-                          fetchData();
-                        }}
-                      >
-                        Reset to Default Server
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="console-line info" style={{ marginTop: '30px', padding: '15px', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                    <div style={{ fontWeight: 'bold' }}>Current Connection Status:</div>
-                    <div style={{ fontSize: '0.85rem' }}>
-                      <strong>Active Base API:</strong> <span className="text-purple">{apiBase}</span>
-                    </div>
-                    <div style={{ fontSize: '0.85rem' }}>
-                      <strong>WebSocket Stream:</strong> <span className="text-pink">{apiBase.replace(/^http/, 'ws')}</span>
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-
-          </div>
-        )}
-      </main>
-
-      {/* FOOTER TAB SELECTOR */}
-      <footer className="admin-footer-tabs">
-        <button 
-          className={`tab-item ${activeTab === 'dashboard' ? 'active' : ''}`}
-          onClick={() => setActiveTab('dashboard')}
-        >
-          <Cpu size={20} />
-          <span>Dashboard</span>
-        </button>
-        <button 
-          className={`tab-item ${activeTab === 'bookings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('bookings')}
-        >
-          <Calendar size={20} />
-          {bookings.filter(b => b.status === 'pending').length > 0 && <span className="tab-badge pulse">{bookings.filter(b => b.status === 'pending').length}</span>}
-          <span>Bookings</span>
-        </button>
-        <button 
-          className={`tab-item ${activeTab === 'calls' ? 'active' : ''}`}
-          onClick={() => setActiveTab('calls')}
-        >
-          <PhoneCall size={20} />
-          {calls.filter(c => c.status === 'pending').length > 0 && <span className="tab-badge pulse" style={{ background: 'var(--primary-pink)' }}>{calls.filter(c => c.status === 'pending').length}</span>}
-          <span>Callbacks</span>
-        </button>
-        <button 
-          className={`tab-item ${activeTab === 'editor' ? 'active' : ''}`}
-          onClick={() => setActiveTab('editor')}
-        >
-          <Edit2 size={20} />
-          <span>Edit Site</span>
-        </button>
-        <button 
-          className={`tab-item ${activeTab === 'settings' ? 'active' : ''}`}
-          onClick={() => setActiveTab('settings')}
-        >
-          <Settings size={20} />
-          <span>Connection</span>
-        </button>
-      </footer>
-
-      {/* DYNAMIC MODALS FOR ADDING/EDITING SERVICES & PROJECTS */}
-      <AnimatePresence>
-        {editorModal && modalItem && (
-          <motion.div className="modal-overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <motion.div 
-              className="modal-container" 
-              style={{ maxHeight: '520px', maxWidth: '500px' }}
-              initial={{ scale: 0.95 }}
-              animate={{ scale: 1 }}
-              exit={{ scale: 0.95 }}
-            >
-              <div className="modal-header">
-                <h3 className="modal-title" style={{ color: '#fff', fontSize: '1.2rem' }}>
-                  {editorModal.includes('service') && (editorModal.includes('add') ? 'Add Portfolio Service' : 'Edit Portfolio Service')}
-                  {editorModal.includes('project') && (editorModal.includes('add') ? 'Add Case Study Project' : 'Edit Case Study Project')}
-                </h3>
-                <button className="modal-close-btn" onClick={() => { setEditorModal(null); setModalItem(null); }}><X size={16} /></button>
+          {/* Main Grid View */}
+          <div className="grid-container">
+            {/* Left diagnostics panel */}
+            <div className="panel">
+              <div className="panel-header">
+                <span>SUIT DIAGNOSTICS</span>
+                <span style={{ fontSize: '0.65rem', color: 'var(--theme-bright)' }}>STARK-MK85</span>
               </div>
-              <form onSubmit={handleModalSubmit} className="crm-form" style={{ border: 'none', background: 'none', padding: '24px', maxWidth: '100%' }}>
+              <div className="panel-content">
+                <div className="suit-box">
+                  <svg className="suit-svg" viewBox="0 0 100 200" xmlns="http://www.w3.org/2000/svg">
+                    <path className="suit-part" id="part-helmet" onClick={() => handleSuitPartClick('part-helmet')} d="M38,20 Q38,10 50,10 Q62,10 62,20 Q62,35 50,35 Q38,35 38,20 Z M44,22 L47,22 M53,22 L56,22" />
+                    <path className="suit-part" id="part-neck" onClick={() => handleSuitPartClick('part-neck')} d="M44,35 L44,42 L56,42 L56,35 Z" />
+                    <path className="suit-part" id="part-chest" onClick={() => handleSuitPartClick('part-chest')} d="M30,42 L70,42 L74,75 L64,105 L36,105 L26,75 Z" />
+                    <polygon points="46,55 54,55 50,62" style={{ fill: 'var(--theme-bright)', filter: 'drop-shadow(0 0 3px var(--theme-glow))' }} />
+                    <path className="suit-part" id="part-left-arm" onClick={() => handleSuitPartClick('part-left-arm')} d="M26,44 L16,70 L10,100 Q8,105 10,110 L14,110 L22,80 L28,52" />
+                    <path className="suit-part" id="part-right-arm" onClick={() => handleSuitPartClick('part-right-arm')} d="M74,44 L84,70 L90,100 Q92,105 90,110 L86,110 L78,80 L72,52" />
+                    <path className="suit-part" id="part-left-leg" onClick={() => handleSuitPartClick('part-left-leg')} d="M36,105 L32,145 L28,185 Q26,192 34,192 L44,192 L44,145 L46,105 Z" />
+                    <path className="suit-part" id="part-right-leg" onClick={() => handleSuitPartClick('part-right-leg')} d="M64,105 L68,145 L72,185 Q74,192 66,192 L56,192 L56,145 L54,105 Z" />
+                  </svg>
+                </div>
+                <div className="diagnostic-report">
+                  <div className="diag-title">{diagPart.title}</div>
+                  <div className="system-status-list">
+                    {diagPart.details.map((item, idx) => (
+                      <div className="system-status-item" key={idx}>
+                        <span>{item.name}</span>
+                        <span className={item.status === 'ok' ? 'status-ok' : item.status === 'warning' ? 'status-warning' : 'status-error'}>
+                          {item.val}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Center HUD: Reactor Core + Chat Console */}
+            <div className="center-hud">
+              <div className="core-visualization">
+                <div className="panel">
+                  <div className="panel-header">
+                    <span>ARC CORE V2</span>
+                    <span style={{ fontSize: '0.65rem', color: 'var(--theme-bright)' }}>STARK IND.</span>
+                  </div>
+                  <div className="panel-content arc-reactor-card">
+                    <svg className="arc-reactor-svg" onClick={handleArcReactorClick} viewBox="0 0 100 100">
+                      <circle cx="50" cy="50" r="46" stroke="rgba(255,255,255,0.05)" strokeWidth="1.5" fill="none" />
+                      <circle 
+                        className="arc-outer-ring" 
+                        cx="50" cy="50" r="44" 
+                        style={{ animationDuration: systemPower === 200 ? '5s' : systemPower === 25 ? '60s' : '25s' }}
+                      />
+                      <circle 
+                        className="arc-inner-ring" 
+                        cx="50" cy="50" r="36" 
+                        style={{ animationDuration: systemPower === 200 ? '3s' : systemPower === 25 ? '40s' : '15s' }}
+                      />
+                      <circle className="arc-glow-layer" cx="50" cy="50" r="32" strokeWidth="2" />
+                      <circle 
+                        className="arc-segments" 
+                        cx="50" cy="50" r="26" 
+                        style={{ animationDuration: systemPower === 200 ? '2s' : systemPower === 25 ? '30s' : '10s' }}
+                      />
+                      <polygon className="arc-center-tri" points="40,60 60,60 50,43" />
+                      <circle className="arc-core" cx="50" cy="50" r="8" />
+                    </svg>
+                    <div className="reactor-meta">
+                      <div className="reactor-title">POWER CAPACITY</div>
+                      <div className="reactor-power-value">{systemPower.toFixed(1)}%</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="panel">
+                  <div className="panel-header">
+                    <span>B.A.R.F. HOLOGRAM</span>
+                    <span style={{ fontSize: '0.65rem', color: 'var(--theme-bright)' }}>3D STREAM</span>
+                  </div>
+                  <div className="hologram-card panel-content">
+                    <canvas ref={canvasRef} id="hologram-canvas"></canvas>
+                    <div className="canvas-overlay-text" id="hologram-mode-txt">3D WIREFRAME HELMET</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Chat Terminal Console */}
+              <div className="panel console-panel">
+                <div className="panel-header">
+                  <span>SYSTEM COMMAND TERMINAL</span>
+                  <span style={{ fontSize: '0.65rem', color: 'var(--theme-bright)' }}>DIRECT LINK</span>
+                </div>
+                <div className="chat-container">
+                  {chatLogs.map((log, idx) => (
+                    <div className={`message ${log.isUser ? 'user' : 'jarvis'}`} key={idx}>
+                      <span className="sender-tag">{log.sender}</span>
+                      <span>{log.text}</span>
+                    </div>
+                  ))}
+                  <div ref={chatEndRef} />
+                </div>
                 
-                {/* A. Service Form fields */}
-                {editorModal.includes('service') && (
-                  <>
-                    <div className="crm-form-group">
-                      <label>Service Title</label>
-                      <input 
-                        type="text" 
-                        value={modalItem.title} 
-                        onChange={(e) => setModalItem({ ...modalItem, title: e.target.value })}
-                        required 
-                      />
-                    </div>
-                    <div className="crm-form-group">
-                      <label>Description</label>
-                      <input 
-                        type="text" 
-                        value={modalItem.desc} 
-                        onChange={(e) => setModalItem({ ...modalItem, desc: e.target.value })}
-                        required 
-                      />
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-                      <div className="crm-form-group">
-                        <label>Icon Identifier</label>
-                        <select 
-                          value={modalItem.icon} 
-                          onChange={(e) => setModalItem({ ...modalItem, icon: e.target.value })}
-                        >
-                          <option value="Zap">Zap</option>
-                          <option value="Bot">Bot</option>
-                          <option value="Code">Code</option>
-                          <option value="Database">Database</option>
-                          <option value="Video">Video</option>
-                          <option value="Settings">Settings</option>
-                        </select>
-                      </div>
-                      <div className="crm-form-group">
-                        <label>Color Accent</label>
-                        <select 
-                          value={modalItem.color} 
-                          onChange={(e) => setModalItem({ ...modalItem, color: e.target.value })}
-                        >
-                          <option value="purple">Purple</option>
-                          <option value="pink">Pink</option>
-                          <option value="blue">Blue</option>
-                        </select>
-                      </div>
-                    </div>
-                  </>
-                )}
+                <div className="console-action-btns">
+                  <span className="action-badge" onClick={() => handleUserTextSubmit('diagnostics scan')}>SYSTEM SCAN</span>
+                  <span className="action-badge" onClick={() => handleUserTextSubmit('repulsor test')}>REPULSOR TEST</span>
+                  <span className="action-badge" onClick={() => handleUserTextSubmit('red alert')}>RED ALERT</span>
+                  <span className="action-badge" onClick={() => handleUserTextSubmit('house party protocol')}>HOUSE PARTY</span>
+                  <span className="action-badge" onClick={() => handleUserTextSubmit('clean slate protocol')}>CLEAN SLATE</span>
+                  <span className="action-badge" onClick={() => handleUserTextSubmit('change theme to Friday')}>F.R.I.D.A.Y.</span>
+                  <span className="action-badge" onClick={() => handleUserTextSubmit('change theme to Jarvis')}>J.A.R.V.I.S.</span>
+                </div>
 
-                {/* B. Project Form fields */}
-                {editorModal.includes('project') && (
-                  <>
-                    <div className="crm-form-group">
-                      <label>Project Title</label>
+                <div className="chat-input-bar">
+                  <input 
+                    type="text" 
+                    className="terminal-input" 
+                    placeholder="Type command (e.g. 'turn on flashlight', 'open Spotify', 'red alert')..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        handleUserTextSubmit(e.target.value);
+                        e.target.value = '';
+                      }
+                    }}
+                    autoComplete="off"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Right Panel: Power Controls + System logs */}
+            <div className="panel">
+              <div className="panel-header">
+                <span>POWER CONSOLE</span>
+                <span style={{ fontSize: '0.65rem', color: 'var(--theme-bright)' }}>ALLOCATION</span>
+              </div>
+              <div className="panel-content">
+                <div className="slider-group">
+                  <div className="slider-item">
+                    <div className="slider-header">
+                      <span className="slider-name">Flight Thrusters</span>
+                      <span className="slider-val">{sliders.thrusters}%</span>
+                    </div>
+                    <div className="range-wrap">
                       <input 
-                        type="text" 
-                        value={modalItem.title} 
-                        onChange={(e) => setModalItem({ ...modalItem, title: e.target.value })}
-                        required 
+                        type="range" 
+                        className="hud-range" 
+                        min="0" max="100" 
+                        value={sliders.thrusters} 
+                        onChange={(e) => handleSliderChange('thrusters', Number(e.target.value))}
                       />
                     </div>
-                    <div className="crm-form-group">
-                      <label>Static Image URL path</label>
+                  </div>
+                  <div className="slider-item">
+                    <div className="slider-header">
+                      <span className="slider-name">Repulsors Output</span>
+                      <span className="slider-val">{sliders.repulsors}%</span>
+                    </div>
+                    <div className="range-wrap">
                       <input 
-                        type="text" 
-                        value={modalItem.img} 
-                        onChange={(e) => setModalItem({ ...modalItem, img: e.target.value })}
-                        required 
+                        type="range" 
+                        className="hud-range" 
+                        min="0" max="100" 
+                        value={sliders.repulsors} 
+                        onChange={(e) => handleSliderChange('repulsors', Number(e.target.value))}
                       />
                     </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px' }}>
-                      <div className="crm-form-group">
-                        <label>Card Tag / Subtitle</label>
-                        <input 
-                          type="text" 
-                          value={modalItem.tag} 
-                          onChange={(e) => setModalItem({ ...modalItem, tag: e.target.value })}
-                          required 
-                        />
-                      </div>
-                      <div className="crm-form-group">
-                        <label>Demo Type Sandbox</label>
-                        <select 
-                          value={modalItem.type} 
-                          onChange={(e) => setModalItem({ ...modalItem, type: e.target.value })}
-                        >
-                          <option value="builder">AI Builder Flow</option>
-                          <option value="salon">Salon Stepper Simulator</option>
-                          <option value="crm">Leads CRM funnel</option>
-                        </select>
-                      </div>
+                  </div>
+                  <div className="slider-item">
+                    <div className="slider-header">
+                      <span className="slider-name">Defensive Shields</span>
+                      <span className="slider-val">{sliders.shields}%</span>
                     </div>
-                  </>
-                )}
+                    <div className="range-wrap">
+                      <input 
+                        type="range" 
+                        className="hud-range" 
+                        min="0" max="100" 
+                        value={sliders.shields} 
+                        onChange={(e) => handleSliderChange('shields', Number(e.target.value))}
+                      />
+                    </div>
+                  </div>
+                  <div className="slider-item">
+                    <div className="slider-header">
+                      <span className="slider-name">Life Support</span>
+                      <span className="slider-val">{sliders.lifesupport}%</span>
+                    </div>
+                    <div className="range-wrap">
+                      <input 
+                        type="range" 
+                        className="hud-range" 
+                        min="0" max="100" 
+                        value={sliders.lifesupport} 
+                        onChange={(e) => handleSliderChange('lifesupport', Number(e.target.value))}
+                      />
+                    </div>
+                  </div>
+                </div>
 
-                <button 
-                  type="submit" 
-                  className="btn-crm-action" 
-                  style={{ width: '100%', padding: '12px', marginTop: '15px', justifyContent: 'center' }}
-                >
-                  Save & Publish Item
-                </button>
-              </form>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
+                {/* System logs box */}
+                <div style={{ borderTop: '1px solid var(--theme-dim)', marginTop: '10px', paddingTop: '10px', flex: 1, display: 'flex', flexDirection: 'column' }}>
+                  <div className="panel-header" style={{ background: 'transparent', border: 'none', padding: '0 0 10px 0' }}>
+                    <span>SYSTEM TELEMETRY LOGS</span>
+                  </div>
+                  <div className="system-log-box">
+                    {telemetryLogs.map((log, idx) => (
+                      <div className={`log-entry ${log.type}`} key={idx}>
+                        [{log.time}] {log.text}
+                      </div>
+                    ))}
+                    <div ref={telemetryEndRef} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
