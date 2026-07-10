@@ -11,9 +11,9 @@ import {
 import './App.css';
 
 // Dynamic API Base URL detection
-const API_BASE = typeof window !== 'undefined'
+const API_BASE = import.meta.env.VITE_API_BASE_URL || (typeof window !== 'undefined'
   ? `${window.location.protocol}//${window.location.hostname}:3001`
-  : 'http://localhost:3001';
+  : 'http://localhost:3001');
 
 // Custom Confetti Component
 const ConfettiEffect = () => {

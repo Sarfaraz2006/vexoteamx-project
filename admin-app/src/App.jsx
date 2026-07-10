@@ -10,13 +10,31 @@ import {
 } from 'lucide-react';
 import './App.css';
 
-// Dynamic API detection based on location. Overwritten during build if necessary.
-const BASE_IP = typeof window !== 'undefined' ? window.location.hostname : '67.205.137.231';
-const API_BASE = `http://${BASE_IP}:3001`;
-const WS_BASE = `ws://${BASE_IP}:3001`;
+// Dynamic API detection helpers.
+const getInitialApiBase = () => {
+  if (typeof window !== 'undefined') {
+    const saved = localStorage.getItem('VEXO_API_BASE');
+    if (saved) return saved;
+    const hn = window.location.hostname;
+    // If local APK environment or localhost dev
+    if (hn === 'localhost' || hn === '127.0.0.1' || hn === '' || hn.includes('local') || hn.startsWith('10.')) {
+      return 'http://67.205.137.231:3001';
+    }
+    return `http://${hn}:3001`;
+  }
+  return 'http://67.205.137.231:3001';
+};
 
 export default function App() {
+  const [apiBase, setApiBase] = useState(getInitialApiBase);
+  const [tempApiUrl, setTempApiUrl] = useState(apiBase);
   const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard', 'bookings', 'calls', 'editor'
+
+  const wsBase = apiBase.replace(/^http/, 'ws');
+  
+  // Re-expose API_BASE and WS_BASE locally so child components/hooks work seamlessly
+  const API_BASE = apiBase;
+  const WS_BASE = wsBase;
   
   // Real-Time States
   const [bookings, setBookings] = useState([]);
@@ -149,7 +167,7 @@ export default function App() {
     return () => {
       if (wsRef.current) wsRef.current.close();
     };
-  }, []);
+  }, [apiBase]);
 
   // Update Booking Status API call
   const handleUpdateBookingStatus = async (id, status) => {
@@ -742,6 +760,83 @@ export default function App() {
               </motion.div>
             )}
 
+            {/* 5. CONNECTION SETTINGS VIEW */}
+            {activeTab === 'settings' && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="tab-pane">
+                <div className="pane-header-row">
+                  <h2 className="pane-title">Server Connection</h2>
+                  <span className="pane-subtitle">Configure backend API connection coordinates</span>
+                </div>
+
+                <div className="editor-card-section" style={{ marginTop: '20px' }}>
+                  <h3 className="editor-section-title"><Cpu size={18} /> API Endpoint URL</h3>
+                  <p style={{ color: 'var(--text-gray)', fontSize: '0.85rem', margin: '8px 0 20px 0', lineHeight: '1.5' }}>
+                    Paste the production Backend URL (e.g., from Render, Railway, or your custom server). 
+                    The mobile app will connect to this endpoint for all operations.
+                  </p>
+
+                  <div className="crm-form" style={{ maxWidth: '100%', border: 'none', background: 'none', padding: '0' }}>
+                    <div className="crm-form-group">
+                      <label>Backend URL (HTTPS or HTTP)</label>
+                      <input 
+                        type="url" 
+                        placeholder="https://your-backend.onrender.com"
+                        value={tempApiUrl}
+                        onChange={(e) => setTempApiUrl(e.target.value)}
+                        style={{ width: '100%', background: 'rgba(255,255,255,0.04)', color: '#fff', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '12px' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '12px', marginTop: '20px' }}>
+                      <button 
+                        type="button"
+                        className="btn-cta btn-cta-primary" 
+                        onClick={() => {
+                          let formatted = tempApiUrl.trim();
+                          if (formatted && !formatted.startsWith('http://') && !formatted.startsWith('https://')) {
+                            formatted = 'https://' + formatted;
+                          }
+                          // Remove trailing slash
+                          formatted = formatted.replace(/\/+$/, '');
+                          localStorage.setItem('VEXO_API_BASE', formatted);
+                          setApiBase(formatted);
+                          alert("Backend URL saved successfully! Reconnecting services...");
+                          fetchData();
+                        }}
+                      >
+                        Save & Reconnect
+                      </button>
+                      <button 
+                        type="button"
+                        className="btn-hero btn-hero-secondary"
+                        style={{ padding: '10px 20px' }}
+                        onClick={() => {
+                          const defaultUrl = 'http://67.205.137.231:3001';
+                          setTempApiUrl(defaultUrl);
+                          localStorage.setItem('VEXO_API_BASE', defaultUrl);
+                          setApiBase(defaultUrl);
+                          alert("Reset to default server IP. Reconnecting...");
+                          fetchData();
+                        }}
+                      >
+                        Reset to Default Server
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="console-line info" style={{ marginTop: '30px', padding: '15px', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ fontWeight: 'bold' }}>Current Connection Status:</div>
+                    <div style={{ fontSize: '0.85rem' }}>
+                      <strong>Active Base API:</strong> <span className="text-purple">{apiBase}</span>
+                    </div>
+                    <div style={{ fontSize: '0.85rem' }}>
+                      <strong>WebSocket Stream:</strong> <span className="text-pink">{apiBase.replace(/^http/, 'ws')}</span>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            )}
+
           </div>
         )}
       </main>
@@ -777,6 +872,13 @@ export default function App() {
         >
           <Edit2 size={20} />
           <span>Edit Site</span>
+        </button>
+        <button 
+          className={`tab-item ${activeTab === 'settings' ? 'active' : ''}`}
+          onClick={() => setActiveTab('settings')}
+        >
+          <Settings size={20} />
+          <span>Connection</span>
         </button>
       </footer>
 
